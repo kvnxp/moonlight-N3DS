@@ -791,6 +791,18 @@ int main_loop(int argc, char *argv[]) {
             continue;
         }
 
+        // Check if this address is in the paired list
+        // If so, mark it as paired even if gs_init didn't detect it
+        auto paired_list = list_paired_addresses();
+        std::string expected_addr = std::string(config.address) + ":" + std::to_string(config.port);
+        for (const auto &addr : paired_list) {
+            if (addr == expected_addr) {
+                server.paired = true;
+                fprintf(stderr, "[main] Detected address in paired list: %s, setting paired=true\n", addr.c_str());
+                break;
+            }
+        }
+
         while (aptMainLoop()) {
             std::string action = prompt_for_action(&server);
             if (action.empty()) {

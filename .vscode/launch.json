@@ -1,0 +1,37 @@
+{
+    // Configuración de depuración para VSCode usando el adaptador GDB
+    // Se usa el ejecutable arm-none-eabi-gdb del toolchain.
+    // En "program" apuntar al ELF generado (e.g. "${workspaceFolder}/moonlight.elf").
+    // Para conectar a la 3DS a través de gdbserver, especificar "target".
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Moonlight (local)",
+            "type": "cppdbg",
+            "request": "launch",
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/msys64/opt/devkitpro/devkitARM/bin/arm-none-eabi-gdb.exe",
+            "program": "${workspaceFolder}/moonlight.elf",
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "args": [],
+            "environment": [],
+            "externalConsole": false
+        },
+        {
+            "name": "Attach to gdbserver (3DS)",
+            "type": "cppdbg",
+            "request": "launch",
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/msys64/opt/devkitpro/devkitARM/bin/arm-none-eabi-gdb.exe",
+            "program": "${workspaceFolder}/moonlight.elf",
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "args": [],
+            "environment": [],
+            "externalConsole": false,
+            // change the ip:port below to the address where gdbserver is listening
+            "miDebuggerArgs": "--ex \"target remote 192.168.1.34:4003\""
+        }
+    ]
+}

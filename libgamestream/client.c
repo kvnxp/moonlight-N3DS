@@ -467,24 +467,37 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   data = http_create_data();
   if (data == NULL)
     return GS_OUT_OF_MEMORY;
-  else if ((ret = http_request(url, data)) != GS_OK)
+  
+  fprintf(stderr, "[pair] Step 1/7: Requesting server certificate...\n");
+  if ((ret = http_request(url, data)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: http_request failed with ret=%d\n", ret);
     goto cleanup;
+  }
+  fprintf(stderr, "[pair] Got %zu bytes response\n", data->size);
 
-  if ((ret = xml_status(data->memory, data->size) != GS_OK))
+  if ((ret = xml_status(data->memory, data->size) != GS_OK)) {
+    fprintf(stderr, "[pair] ERROR: xml_status failed with ret=%d\n", ret);
     goto cleanup;
-  else if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK)
+  }
+  
+  if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: xml_search('paired') failed with ret=%d\n", ret);
     goto cleanup;
+  }
 
   if (strcmp(result, "1") != 0) {
     gs_error = "Pairing failed";
     ret = GS_FAILED;
+    fprintf(stderr, "[pair] ERROR: Server not ready for pairing (paired value: %s)\n", result);
     goto cleanup;
   }
 
   free(result);
   result = NULL;
-  if ((ret = xml_search(data->memory, data->size, "plaincert", &result)) != GS_OK)
+  if ((ret = xml_search(data->memory, data->size, "plaincert", &result)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: xml_search('plaincert') failed with ret=%d\n", ret);
     goto cleanup;
+  }
 
 
   size_t plaincertlen = strlen(result)/2;
@@ -513,19 +526,30 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&clientchallenge=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, challenge_hex);
-  if ((ret = http_request(url, data)) != GS_OK)
+  
+  fprintf(stderr, "[pair] Step 2/7: Sending client challenge...\n");
+  if ((ret = http_request(url, data)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: clientchallenge http_request failed with ret=%d\n", ret);
     goto cleanup;
+  }
+  fprintf(stderr, "[pair] Got %zu bytes response\n", data->size);
 
   free(result);
   result = NULL;
-  if ((ret = xml_status(data->memory, data->size) != GS_OK))
+  if ((ret = xml_status(data->memory, data->size) != GS_OK)) {
+    fprintf(stderr, "[pair] ERROR: xml_status failed in step 2 with ret=%d\n", ret);
     goto cleanup;
-  else if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK)
+  }
+  
+  if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: xml_search('paired') failed in step 2 with ret=%d\n", ret);
     goto cleanup;
+  }
 
   if (strcmp(result, "1") != 0) {
     gs_error = "Pairing failed";
     ret = GS_FAILED;
+    fprintf(stderr, "[pair] ERROR: Server not ready in step 2 (paired=%s)\n", result);
     goto cleanup;
   }
 
@@ -533,6 +557,7 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   result = NULL;
   if (xml_search(data->memory, data->size, "challengeresponse", &result) != GS_OK) {
     ret = GS_INVALID;
+    fprintf(stderr, "[pair] ERROR: xml_search('challengeresponse') failed with ret=%d\n", ret);
     goto cleanup;
   }
 
@@ -571,8 +596,63 @@ int gs_pair(PSERVER_DATA server, char* pin) {
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
-  snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&serverchallengeresp=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, challenge_response_hex);
-  if ((ret = http_request(url, data)) != GS_OK)
+  snprintf(url, url_max_len,
+           "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&serverchallengeresp=%s",
+           server->serverInfo.address, server->httpPort, unique_id, uuid_str,
+           challenge_response_hex);
+
+  // The PIN must be entered on the PC before the server will respond to this
+  // request.  In practice the user may take several seconds to launch GFE and
+  // type it; the server will simply close the connection with no body until
+  // the PIN matches.  Retry the request until we get a non-empty response or
+  // a non-I/O error occurs.
+  fprintf(stderr, "[pair] Step 3/7: Waiting for PIN verification on PC...\n");
+  int retry_count = 0;
+  for (;;) {
+    ret = http_request(url, data);
+    retry_count++;
+    if ((ret == GS_IO_ERROR || data->size == 0) && ret != GS_FAILED) {
+      // no data yet, wait a bit before trying again
+      // Note: GS_OK with empty body (2xx status) also indicates PIN not verified yet
+      if (retry_count <= 3 || retry_count % 5 == 0) {  // Log every attempt initially, then every 5
+        printf("Waiting for PIN verification on PC...\n");
+        fprintf(stderr, "[pair] Attempt %d: no response (ret=%d size=%zu), retrying in 1s\n", 
+                retry_count, ret, data->size);
+      }
+      printf("Server response (empty)\n");
+      sleep(1);
+      continue;
+    }
+    // print whatever we received, even if it's empty, so user can see
+    fprintf(stderr, "[pair] PIN verification completed after %d attempts. Got %zu bytes\n", 
+            retry_count, data->size);
+    printf("Server returned (%zu bytes): %s\n", data->size,
+           data->memory ? data->memory : "(null)");
+    break;
+  }
+  if (ret != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: serverchallengeresp failed with ret=%d\n", ret);
+    goto cleanup;
+  }
+
+  free(result);
+  result = NULL;
+  if ((ret = xml_status(data->memory, data->size) != GS_OK)) {
+    fprintf(stderr, "[pair] ERROR: xml_status failed after PIN wait with ret=%d\n", ret);
+    goto cleanup;
+  }
+  
+  if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: xml_search('paired') failed after PIN with ret=%d\n", ret);
+    goto cleanup;
+  }
+
+  if (strcmp(result, "1") != 0) {
+    gs_error = "Pairing failed";
+    ret = GS_FAILED;
+    fprintf(stderr, "[pair] ERROR: Server not ready after PIN (paired=%s)\n", result);
+    goto cleanup;
+  }
     goto cleanup;
 
   free(result);
@@ -592,8 +672,10 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   result = NULL;
   if (xml_search(data->memory, data->size, "pairingsecret", &result) != GS_OK) {
     ret = GS_INVALID;
+    fprintf(stderr, "[pair] ERROR: xml_search('pairingsecret') failed with ret=%d\n", ret);
     goto cleanup;
   }
+  fprintf(stderr, "[pair] Step 4/7: Got pairing secret\n");
 
   size_t pairing_secret_len = strlen(result) / 2;
   if (pairing_secret_len <= 16) {
@@ -626,42 +708,97 @@ int gs_pair(PSERVER_DATA server, char* pin) {
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
   snprintf(url, url_max_len, "http://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&clientpairingsecret=%s", server->serverInfo.address, server->httpPort, unique_id, uuid_str, client_pairing_secret_hex);
-  if ((ret = http_request(url, data)) != GS_OK)
+  
+  fprintf(stderr, "[pair] Step 5/7: Sending client pairing secret...\n");
+  if ((ret = http_request(url, data)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: clientpairingsecret http_request failed with ret=%d\n", ret);
     goto cleanup;
+  }
+  fprintf(stderr, "[pair] Got %zu bytes response\n", data->size);
 
   free(result);
   result = NULL;
-  if ((ret = xml_status(data->memory, data->size) != GS_OK))
+  if ((ret = xml_status(data->memory, data->size) != GS_OK)) {
+    fprintf(stderr, "[pair] ERROR: xml_status failed in step 5 with ret=%d\n", ret);
     goto cleanup;
-  else if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK)
+  }
+  
+  if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: xml_search('paired') failed in step 5 with ret=%d\n", ret);
     goto cleanup;
+  }
 
   if (strcmp(result, "1") != 0) {
     gs_error = "Pairing failed";
     ret = GS_FAILED;
+    fprintf(stderr, "[pair] ERROR: Server not ready in step 5 (paired=%s)\n", result);
     goto cleanup;
   }
 
   uuid_generate_random(uuid);
   uuid_unparse(uuid, uuid_str);
   snprintf(url, url_max_len, "https://%s:%u/pair?uniqueid=%s&uuid=%s&devicename=roth&updateState=1&phrase=pairchallenge", server->serverInfo.address, server->httpsPort, unique_id, uuid_str);
-  if ((ret = http_request(url, data)) != GS_OK)
-    goto cleanup;
+  
+  // Similar retry logic for pairchallenge: may need to wait for server to verify PIN
+  fprintf(stderr, "[pair] Step 6/7: Sending pair challenge (HTTPS)...\n");
+  int pairchallenge_retry = 0;
+  for (;;) {
+    if ((ret = http_request(url, data)) != GS_OK) {
+      pairchallenge_retry++;
+      // Check if it's an empty response (server not ready)
+      if ((ret == GS_IO_ERROR || data->size == 0) && ret != GS_FAILED) {
+        if (pairchallenge_retry <= 3) {
+          fprintf(stderr, "[pair] pairchallenge attempt %d: no response (ret=%d size=%zu), retrying in 1s\n", 
+                  pairchallenge_retry, ret, data->size);
+        }
+        printf("Waiting for pairing verification...\n");
+        sleep(1);
+        continue;
+      }
+      // when pairing fails frequently we get empty response; log contents
+      if (ret == GS_IO_ERROR && data && data->size == 0) {
+        gs_error = "empty HTTP response during final pairchallenge";
+        fprintf(stderr, "[pair] url=%s body=\"%s\"\n", url, data->memory ? data->memory : "(null)");
+      }
+      fprintf(stderr, "[pair] ERROR: pairchallenge failed with ret=%d\n", ret);
+      goto cleanup;
+    }
+    // Successfully got response with data
+    if (data->size > 0) {
+      fprintf(stderr, "[pair] pairchallenge succeeded after %d attempts. Got %zu bytes\n", 
+              pairchallenge_retry + 1, data->size);
+      break;
+    }
+    // Got 2xx but no body - server not ready yet
+    pairchallenge_retry++;
+    if (pairchallenge_retry <= 3) {
+      fprintf(stderr, "[pair] pairchallenge attempt %d: got empty 2xx response, retrying in 1s\n", pairchallenge_retry);
+    }
+    printf("Waiting for pairing verification...\n");
+    sleep(1);
+  }
 
   free(result);
   result = NULL;
-  if ((ret = xml_status(data->memory, data->size) != GS_OK))
+  if ((ret = xml_status(data->memory, data->size) != GS_OK)) {
+    fprintf(stderr, "[pair] ERROR: xml_status failed in final step with ret=%d\n", ret);
     goto cleanup;
-  else if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK)
+  }
+  
+  if ((ret = xml_search(data->memory, data->size, "paired", &result)) != GS_OK) {
+    fprintf(stderr, "[pair] ERROR: xml_search('paired') failed in final step with ret=%d\n", ret);
     goto cleanup;
+  }
 
   if (strcmp(result, "1") != 0) {
     gs_error = "Pairing failed";
     ret = GS_FAILED;
+    fprintf(stderr, "[pair] ERROR: Final paired status is: %s\n", result);
     goto cleanup;
   }
 
   server->paired = true;
+  fprintf(stderr, "[pair] Step 7/7: SUCCESS! Device paired\n");
 
   cleanup:
   if (ret != GS_OK)

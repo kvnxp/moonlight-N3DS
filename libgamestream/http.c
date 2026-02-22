@@ -28,6 +28,8 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 #else
 #include <curl/curl.h>
 #endif
@@ -191,12 +193,46 @@ int http_request(char* url, PHTTP_DATA data) {
   }
   freeaddrinfo(res);
 
+  bool use_ssl = strcmp(scheme, "https") == 0;
+  SSL_CTX *ctx = NULL;
+  SSL *ssl = NULL;
+  if (use_ssl) {
+    if (debug) printf("[http] starting TLS handshake\n");
+    ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+      gs_error = "SSL context failure";
+      close(sock);
+      return GS_IO_ERROR;
+    }
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
+    ssl = SSL_new(ctx);
+    if (!ssl) {
+      gs_error = "SSL object failure";
+      SSL_CTX_free(ctx);
+      close(sock);
+      return GS_IO_ERROR;
+    }
+    SSL_set_fd(ssl, sock);
+    if (SSL_connect(ssl) <= 0) {
+      gs_error = "SSL handshake failed";
+      if (debug) fprintf(stderr, "[http] TLS handshake error: %s\n", ERR_error_string(ERR_get_error(), NULL));
+      SSL_free(ssl);
+      SSL_CTX_free(ctx);
+      close(sock);
+      return GS_IO_ERROR;
+    }
+    if (debug) printf("[http] TLS handshake complete\n");
+  }
+
   // send request
   char req[4096];
   snprintf(req, sizeof(req),
            "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
            path, host);
-  send(sock, req, strlen(req), 0);
+  if (use_ssl)
+    SSL_write(ssl, req, strlen(req));
+  else
+    send(sock, req, strlen(req), 0);
 
   // read response
   data->memory = malloc(1);
@@ -204,10 +240,29 @@ int http_request(char* url, PHTTP_DATA data) {
   char buf[512];
   int n;
   bool header_done = false;
-  while ((n = recv(sock, buf, sizeof(buf), 0)) > 0) {
+  int status_code = 0;
+  char status_line[128] = {0};
+
+  while (1) {
+    if (use_ssl) {
+      n = SSL_read(ssl, buf, sizeof(buf));
+      if (n <= 0) break;
+    } else {
+      n = recv(sock, buf, sizeof(buf), 0);
+      if (n <= 0) break;
+    }
     if (!header_done) {
       char *hpos = strstr(buf, "\r\n\r\n");
       if (hpos) {
+        // capture status line
+        char *eol = strstr(buf, "\r\n");
+        if (eol) {
+          int len = eol - buf;
+          if (len > sizeof(status_line)-1) len = sizeof(status_line)-1;
+          memcpy(status_line, buf, len);
+          status_line[len] = 0;
+          sscanf(status_line, "HTTP/%*d.%*d %d", &status_code);
+        }
         header_done = true;
         int hdrlen = (hpos - buf) + 4;
         n -= hdrlen;
@@ -221,10 +276,21 @@ int http_request(char* url, PHTTP_DATA data) {
     data->size += n;
     data->memory[data->size] = 0;
   }
+
+  if (use_ssl) {
+    SSL_shutdown(ssl);
+    SSL_free(ssl);
+    SSL_CTX_free(ctx);
+  }
   close(sock);
 
   if (debug)
-    printf("[http] received %zu bytes\n", data->size);
+    printf("[http] received %zu bytes status=%d\n", data->size, status_code);
+
+  // Accept empty body if status indicates success
+  if (data->size == 0 && status_code >= 200 && status_code < 300) {
+    return GS_OK;
+  }
 
   if (data->size == 0) {
     gs_error = "empty HTTP response";
