@@ -61,6 +61,10 @@ RUN wget https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.18.3
 # Install custom third party libraries
 COPY . /moonlight-N3DS
 
+RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-zlib.sh
+RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-bzip2.sh
+RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-libpng.sh
+RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-freetype.sh
 RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-expat.sh
 RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-openssl.sh
 RUN source /etc/profile.d/devkit-env.sh && /moonlight-N3DS/3ds/build-ffmpeg.sh

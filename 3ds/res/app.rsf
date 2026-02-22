@@ -3,7 +3,7 @@ BasicInfo:
   CompanyCode             : "00"
   ProductCode             : $(APP_PRODUCT_CODE)
   ContentType             : Application
-  Logo                    : Homebrew # Nintendo / Licensed / Distributed / iQue / iQueForSystem
+  Logo                    : Distributed
 
 RomFs:
   # Specifies the root path of the read only file system to include in the ROM.
@@ -31,7 +31,7 @@ AccessControlInfo:
   ReleaseKernelMinor            : "44"
 
   # ExtData
-  UseExtSaveData                : false # enables ExtData
+#  UseExtSaveData                : false # enables ExtData (removed because some makerom versions complain)
   #ExtSaveDataId                : 0x300 # only set this when the ID is different to the UniqueId
 
   # FS:USER Archive Access Permissions
@@ -61,10 +61,10 @@ AccessControlInfo:
   SpecialMemoryArrange          : true
 
   # New3DS Exclusive Process Settings
-  SystemModeExt                 : 124MB # Legacy(Default)/124MB/178MB  Legacy:Use Old3DS SystemMode
-  CpuSpeed                      : 804MHz # 256MHz(Default)/804MHz
-  EnableL2Cache                 : true # false(default)/true
-  CanAccessCore2                : true
+#  SystemModeExt                 : 124MB # Legacy(Default)/124MB/178MB  Legacy:Use Old3DS SystemMode (commented out for compatibility)
+#  CpuSpeed                      : 804MHz # 256MHz(Default)/804MHz
+#  EnableL2Cache                 : true # false(default)/true (commented out for makerom compatibility)
+#  CanAccessCore2                : true # New3DS core2 access (commented out)
 
   # Virtual Address Mappings
   IORegisterMapping:
