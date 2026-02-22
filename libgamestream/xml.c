@@ -138,6 +138,12 @@ static void XMLCALL _xml_write_data(void *userData, const XML_Char *s, int len) 
 }
 
 int xml_search(char* data, size_t len, char* node, char** result) {
+  // guard against obvious failure state
+  if (len == 0 || data == NULL) {
+    gs_error = "empty or missing XML payload";
+    return GS_INVALID;
+  }
+
   struct xml_query search;
   search.data = node;
   search.start = 0;
@@ -209,6 +215,11 @@ int xml_modelist(char* data, size_t len, PDISPLAY_MODE *mode_list) {
 }
 
 int xml_status(char* data, size_t len) {
+  if (len == 0 || data == NULL) {
+    gs_error = "empty or missing XML payload";
+    return GS_INVALID;
+  }
+
   int status = 0;
   XML_Parser parser = XML_ParserCreate("UTF-8");
   XML_SetUserData(parser, &status);

@@ -84,6 +84,22 @@ static inline void wait_for_button(std::string prompt = "") {
     }
 }
 
+// Utility used by the address menu to split a string of the form
+// "host:port" into its components. If no port is specified the default
+// Moonlight port (47989) is returned.
+static void split_address_port(const std::string &input,
+                               std::string &host,
+                               uint16_t &port) {
+    auto pos = input.find(':');
+    if (pos != std::string::npos) {
+        host = input.substr(0, pos);
+        port = (uint16_t)std::stoi(input.substr(pos + 1));
+    } else {
+        host = input;
+        port = 47989; // default GFE port
+    }
+}
+
 static void n3ds_exit_handler(void) {
     // Allow users to decide when to exit
     wait_for_button("Press any button to quit");
@@ -181,24 +197,115 @@ static std::string prompt_for_action(PSERVER_DATA server) {
 static std::string prompt_for_address() {
     auto address_list = list_paired_addresses();
     address_list.push_back("new");
-    int idx =
-        console_selection_prompt("Select a server address", address_list, 0);
-    if (idx < 0) {
-        return "";
-    } else if (address_list[idx] != "new") {
-        return address_list[idx];
+
+    int idx = 0;
+    int last_idx = -1;
+
+    while (aptMainLoop()) {
+        if (idx != last_idx) {
+            consoleClear();
+            printf("Select a server address\n");
+            printf("Press up/down to select\n");
+            printf("A to confirm\n");
+            printf("B to cancel\n");
+            printf("X for options (edit/delete)\n\n");
+
+            for (int i = 0; i < address_list.size(); i++) {
+                if (i == idx) {
+                    printf(">%s\n", address_list[i].c_str());
+                } else {
+                    printf("%s\n", address_list[i].c_str());
+                }
+            }
+            last_idx = idx;
+        }
+
+        gfxSwapBuffers();
+        gfxFlushBuffers();
+        gspWaitForVBlank();
+
+        hidScanInput();
+        u32 kDown = hidKeysDown();
+
+        if (kDown & KEY_B) {
+            return "";
+        }
+
+        if (kDown & KEY_DOWN) {
+            if (idx < (int)address_list.size() - 1)
+                idx++;
+        } else if (kDown & KEY_UP) {
+            if (idx > 0)
+                idx--;
+        }
+
+        if (kDown & KEY_X) {
+            // only allow editing/deleting real entries, not the "new" row
+            if (idx < (int)address_list.size() - 1) {
+                std::vector<std::string> opts = {"edit", "delete", "cancel"};
+                int sub = console_selection_prompt("Modify address", opts, 0);
+                if (sub == 0) {
+                    // edit entry
+                    SwkbdState swkbd;
+                    char *addr_buff = (char *)malloc(MAX_INPUT_CHAR);
+                    memset(addr_buff, 0, MAX_INPUT_CHAR);
+                    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 3, -1);
+                    swkbdSetInitialText(&swkbd,
+                                         address_list[idx].c_str());
+                    swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
+                    std::string new_addr = std::string(addr_buff);
+                    free(addr_buff);
+                    trim(new_addr);
+
+                    if (!new_addr.empty() && new_addr != address_list[idx]) {
+                        std::string old_host;
+                        uint16_t old_port;
+                        split_address_port(address_list[idx], old_host,
+                                            old_port);
+                        std::string new_host;
+                        uint16_t new_port;
+                        split_address_port(new_addr, new_host, new_port);
+
+                        remove_pair_address(old_host, old_port);
+                        add_pair_address(new_host, new_port);
+                        address_list[idx] = new_addr;
+                    }
+                } else if (sub == 1) {
+                    // delete entry
+                    std::string old_host;
+                    uint16_t old_port;
+                    split_address_port(address_list[idx], old_host, old_port);
+                    remove_pair_address(old_host, old_port);
+                    address_list.erase(address_list.begin() + idx);
+                    if (idx >= (int)address_list.size())
+                        idx = address_list.size() - 1;
+                }
+            }
+            // after handling X we jump to top of loop to clear any lingering
+            // key state, preventing accidental A-triggered actions
+            continue;
+        }
+
+        if (kDown & KEY_A) {
+            // user wants to use the selected address or create a new one
+            if (idx == (int)address_list.size() - 1) {
+                // new address prompt
+                SwkbdState swkbd;
+                char *addr_buff = (char *)malloc(MAX_INPUT_CHAR);
+                swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 3, -1);
+                swkbdSetHintText(&swkbd, "Address of host to connect to");
+                swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
+                std::string addr_string = std::string(addr_buff);
+                free(addr_buff);
+                trim(addr_string);
+                return addr_string;
+            } else {
+                return address_list[idx];
+            }
+        }
     }
 
-    // Prompt users for a custom address
-    SwkbdState swkbd;
-    char *addr_buff = (char *)malloc(MAX_INPUT_CHAR);
-    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 3, -1);
-    swkbdSetHintText(&swkbd, "Address of host to connect to");
-    swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
-    std::string addr_string = std::string(addr_buff);
-    free(addr_buff);
-    trim(addr_string);
-    return addr_string;
+    return ""; // should never reach
 }
 
 static bool prompt_for_boolean(std::string prompt, bool default_val) {
@@ -497,6 +604,32 @@ static void stream(PSERVER_DATA server, PCONFIGURATION config, int appId) {
 
 static int init_server(CONFIGURATION *config, SERVER_DATA *server) {
     printf("Connecting to %s:%d...\n", config->address, config->port);
+
+    // quick raw TCP check to differentiate network issues from protocol errors
+    {
+        struct addrinfo hints = {0};
+        struct addrinfo *res = NULL;
+        char portstr[6];
+        snprintf(portstr, sizeof(portstr), "%u", config->port);
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
+        if (getaddrinfo(config->address, portstr, &hints, &res) == 0 && res) {
+            int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+            if (sock >= 0) {
+                if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
+                    printf("[netcheck] TCP connect failed: %s\n", strerror(errno));
+                } else {
+                    close(sock);
+                }
+            } else {
+                printf("[netcheck] socket() failed: %s\n", strerror(errno));
+            }
+            freeaddrinfo(res);
+        } else {
+            printf("[netcheck] getaddrinfo failed\n");
+        }
+    }
+
     gs_cleanup();
     int status = gs_init(server, config->address, config->port, config->key_dir,
                          config->debug_level, config->unsupported);
@@ -513,6 +646,13 @@ static int init_server(CONFIGURATION *config, SERVER_DATA *server) {
         printf("Unsupported version: %s\n", gs_error);
         return 1;
     } else if (status != GS_OK) {
+        // always print numeric status and any gs_error message for debugging
+        printf("gs_init returned status %d", status);
+        if (gs_error && gs_error[0])
+            printf(" (%s)", gs_error);
+        printf("\n");
+
+        // report the underlying error string if available;
         printf("Can't connect to server %s:%d\n", config->address,
                config->port);
         return 1;
@@ -634,7 +774,16 @@ int main_loop(int argc, char *argv[]) {
             address_string = address_string.substr(0, port_delim_pos);
             config.port = std::stoi(port_string);
         }
-        config.address = (char *)address_string.c_str();
+
+        // strdup so the configuration keeps a valid copy after the local string
+        if (config.address) {
+            free(config.address);
+        }
+        config.address = strdup(address_string.c_str());
+        if (config.address == NULL) {
+            printf("Out of memory allocating address string\n");
+            continue;
+        }
 
         SERVER_DATA server;
         if (init_server(&config, &server)) {

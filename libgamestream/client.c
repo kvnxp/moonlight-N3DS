@@ -276,11 +276,20 @@ static int load_server_status(PSERVER_DATA server) {
   int ret;
   int i;
 
-  /* Fetch the HTTPS port if we don't have one yet */
+  /* Fetch the HTTPS port if we don't have one yet.  Some networks may block
+     one protocol but not the other, so try both in order to be sure we can
+     reach the server at all. */
   if (!server->httpsPort) {
     ret = load_serverinfo(server, false);
-    if (ret != GS_OK)
-      return ret;
+    if (ret != GS_OK) {
+      /* If the plain HTTP attempt failed with an empty response or other IO
+         error, try again over HTTPS in case the server only listens there. */
+      /* log failure to stderr so caller can see what happened */
+      fprintf(stderr, "[libgamestream] initial HTTP serverinfo failed (%d), retrying HTTPS\n", ret);
+      ret = load_serverinfo(server, true);
+      if (ret != GS_OK)
+        return ret;
+    }
   }
 
   // Modern GFE versions don't allow serverinfo to be fetched over HTTPS if the client

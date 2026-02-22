@@ -90,6 +90,27 @@ void remove_pair_address(std::string address, uint16_t port) {
     fclose(fd);
 }
 
+// Replace an existing paired address with a new value. If the old address
+// isn’t found, the list is left untouched. The new address is inserted in
+// the original position so the ordering remains consistent.
+void edit_pair_address(const std::string &old_address,
+                       const std::string &new_address) {
+    auto address_list = list_paired_addresses();
+
+    char *address_file = (char *)MOONLIGHT_3DS_PATH "/paired";
+    remove(address_file);
+
+    FILE *fd = fopen(address_file, "w");
+    for (auto addr_string : address_list) {
+        if (addr_string == old_address) {
+            addr_string = new_address;
+        }
+        trim(addr_string);
+        fprintf(fd, "%s\n", addr_string.c_str());
+    }
+    fclose(fd);
+}
+
 std::vector<std::string> list_paired_addresses() {
     std::vector<std::string> addresses = std::vector<std::string>();
     std::ifstream pair_file(MOONLIGHT_3DS_PATH "/paired");
