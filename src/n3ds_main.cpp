@@ -665,10 +665,9 @@ static int init_server(CONFIGURATION *config, SERVER_DATA *server) {
         printf("Server codec flags: 0x%x\n",
                server->serverInfo.serverCodecModeSupport);
     }
+    // Only save paired address if successfully paired with the server
     if (server->paired) {
         add_pair_address(config->address, config->port);
-    } else {
-        remove_pair_address(config->address, config->port);
     }
     return 0;
 }

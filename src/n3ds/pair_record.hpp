@@ -22,6 +22,7 @@
 #define MOONLIGHT_3DS_PATH "/3ds/moonlight"
 
 #ifdef __cplusplus
+#include <cstdint>
 #include <string>
 #include <vector>
 

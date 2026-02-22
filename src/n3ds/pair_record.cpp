@@ -19,28 +19,15 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <locale>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include "pair_record.hpp"
-
-// Create directory if it doesn't exist
-static int ensure_directory_exists(const char* path) {
-    struct stat st = {0};
-    if (stat(path, &st) == -1) {
-        #ifdef _WIN32
-            return mkdir(path) == 0 ? 0 : -1;
-        #else
-            return mkdir(path, 0755) == 0 ? 0 : -1;
-        #endif
-    }
-    return 0;
-}
 
 // trim from start (in place)
 inline void ltrim(std::string &s) {
@@ -66,81 +53,65 @@ void trim(std::string &s) {
 void add_pair_address(std::string address, uint16_t port) {
     address += ":" + std::to_string(port);
 
-    // Ensure directory exists
-    if (ensure_directory_exists(MOONLIGHT_3DS_PATH) != 0) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to create directory %s\n", MOONLIGHT_3DS_PATH);
-        return;
-    }
-
     // Prevent duplicates
     auto address_list = list_paired_addresses();
     for (auto entry : address_list) {
         if (entry == address) {
+            fprintf(stderr, "[pair_record] Already paired: %s\n", address.c_str());
             return;
         }
     }
     address_list.push_back(address);
 
-    char *address_file = (char *)MOONLIGHT_3DS_PATH "/paired";
-    remove(address_file);
-
+    const char *address_file = MOONLIGHT_3DS_PATH "/paired";
+    
     FILE *fd = fopen(address_file, "w");
     if (fd == NULL) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to open file %s for writing\n", address_file);
+        fprintf(stderr, "[pair_record] ERROR: Cannot write to %s\n", address_file);
         return;
     }
 
+    bool success = true;
     for (auto addr_string : address_list) {
         trim(addr_string);
         if (fprintf(fd, "%s\n", addr_string.c_str()) < 0) {
-            fprintf(stderr, "[pair_record] ERROR: Failed to write to file %s\n", address_file);
-            fclose(fd);
-            return;
+            success = false;
+            break;
         }
     }
     
-    if (fclose(fd) != 0) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to close file %s\n", address_file);
-    } else {
-        fprintf(stderr, "[pair_record] Successfully saved paired address: %s\n", address.c_str());
+    fclose(fd);
+    if (success) {
+        fprintf(stderr, "[pair_record] SAVED: %s\n", address.c_str());
     }
 }
 
 void remove_pair_address(std::string address, uint16_t port) {
     address += ":" + std::to_string(port);
 
-    // Ensure directory exists
-    if (ensure_directory_exists(MOONLIGHT_3DS_PATH) != 0) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to create directory %s\n", MOONLIGHT_3DS_PATH);
-        return;
-    }
-
     auto address_list = list_paired_addresses();
 
-    char *address_file = (char *)MOONLIGHT_3DS_PATH "/paired";
-    remove(address_file);
-
+    const char *address_file = MOONLIGHT_3DS_PATH "/paired";
+    
     FILE *fd = fopen(address_file, "w");
     if (fd == NULL) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to open file %s for writing\n", address_file);
+        fprintf(stderr, "[pair_record] ERROR: Cannot write to %s\n", address_file);
         return;
     }
 
+    bool found = false;
     for (auto addr_string : address_list) {
         if (addr_string != address) {
             trim(addr_string);
-            if (fprintf(fd, "%s\n", addr_string.c_str()) < 0) {
-                fprintf(stderr, "[pair_record] ERROR: Failed to write to file %s\n", address_file);
-                fclose(fd);
-                return;
-            }
+            fprintf(fd, "%s\n", addr_string.c_str());
+        } else {
+            found = true;
         }
     }
 
-    if (fclose(fd) != 0) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to close file %s\n", address_file);
-    } else {
-        fprintf(stderr, "[pair_record] Successfully removed paired address: %s\n", address.c_str());
+    fclose(fd);
+    if (found) {
+        fprintf(stderr, "[pair_record] REMOVED: %s\n", address.c_str());
     }
 }
 
@@ -149,39 +120,29 @@ void remove_pair_address(std::string address, uint16_t port) {
 // the original position so the ordering remains consistent.
 void edit_pair_address(const std::string &old_address,
                        const std::string &new_address) {
-    // Ensure directory exists
-    if (ensure_directory_exists(MOONLIGHT_3DS_PATH) != 0) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to create directory %s\n", MOONLIGHT_3DS_PATH);
-        return;
-    }
-
     auto address_list = list_paired_addresses();
 
-    char *address_file = (char *)MOONLIGHT_3DS_PATH "/paired";
-    remove(address_file);
+    const char *address_file = MOONLIGHT_3DS_PATH "/paired";
 
     FILE *fd = fopen(address_file, "w");
     if (fd == NULL) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to open file %s for writing\n", address_file);
+        fprintf(stderr, "[pair_record] ERROR: Cannot write to %s\n", address_file);
         return;
     }
 
+    bool found = false;
     for (auto addr_string : address_list) {
         if (addr_string == old_address) {
             addr_string = new_address;
+            found = true;
         }
         trim(addr_string);
-        if (fprintf(fd, "%s\n", addr_string.c_str()) < 0) {
-            fprintf(stderr, "[pair_record] ERROR: Failed to write to file %s\n", address_file);
-            fclose(fd);
-            return;
-        }
+        fprintf(fd, "%s\n", addr_string.c_str());
     }
 
-    if (fclose(fd) != 0) {
-        fprintf(stderr, "[pair_record] ERROR: Failed to close file %s\n", address_file);
-    } else {
-        fprintf(stderr, "[pair_record] Successfully edited paired address\n");
+    fclose(fd);
+    if (found) {
+        fprintf(stderr, "[pair_record] UPDATED: %s\n", new_address.c_str());
     }
 }
 

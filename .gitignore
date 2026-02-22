@@ -4,3 +4,6 @@ build/
 *.elf
 *.smdh
 third_party
+build.log
+moonlight.lst
+
