@@ -23,6 +23,16 @@
 #include "loop.h"
 #include "platform_main.h"
 
+// include ImGui implementation sources directly so they are built with the project
+// (the sample app provides a wrapper file that pulls in all the sources; we
+// use the same wrapper here to avoid duplicating the list and to keep
+// the build consistent with imgui-3ds/Makefile.)
+#include "../imgui-3ds/source/imgui_wrapper.cpp"
+
+// headers for using ImGui API
+#include "imgui/imgui.h"
+#include "imgui/imgui_sw.h"
+
 #include "n3ds/n3ds_connection.hpp"
 #include "n3ds/pair_record.hpp"
 
@@ -30,8 +40,11 @@
 #include "video/video.h"
 
 #include "input/n3ds_input.hpp"
+#include "ui/imgui_menu.hpp"
 
 #include <3ds.h>
+#include <citro3d.h>
+#include <citro2d.h>
 
 #include <Limelight.h>
 
@@ -45,10 +58,12 @@
 #include <netinet/in.h>
 #include <openssl/rand.h>
 #include <stdbool.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <vector>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -64,6 +79,13 @@ static u32 *SOC_buffer = NULL;
 
 static PrintConsole topScreen;
 static PrintConsole bottomScreen;
+
+// ImGui rendering resources
+static C3D_Tex *imgui_tex = nullptr;
+static C2D_Image imgui_image;
+static C3D_RenderTarget* imgui_target = nullptr;
+static std::vector<uint32_t> imgui_pixel_buffer;
+static imgui_sw::SwOptions imgui_sw_options;
 
 static inline void wait_for_button(std::string prompt = "") {
     if (prompt.empty()) {
@@ -105,55 +127,8 @@ static void n3ds_exit_handler(void) {
 static int console_selection_prompt(std::string prompt,
                                     std::vector<std::string> options,
                                     int default_idx) {
-    int option_idx = default_idx;
-    int last_option_idx = -1;
-    while (aptMainLoop()) {
-        if (option_idx != last_option_idx) {
-            consoleClear();
-            if (!prompt.empty()) {
-                printf("%s\n", prompt.c_str());
-            }
-            printf("Press up/down to select\n");
-            printf("Press A to confirm\n");
-            printf("Press B to go back\n\n");
-
-            for (int i = 0; i < options.size(); i++) {
-                if (i == option_idx) {
-                    printf(">%s\n", options[i].c_str());
-                } else {
-                    printf("%s\n", options[i].c_str());
-                }
-            }
-            last_option_idx = option_idx;
-        }
-
-        gfxSwapBuffers();
-        gfxFlushBuffers();
-        gspWaitForVBlank();
-
-        hidScanInput();
-        u32 kDown = hidKeysDown();
-
-        if (kDown & KEY_A) {
-            consoleClear();
-            return option_idx;
-        }
-        if (kDown & KEY_B) {
-            consoleClear();
-            return -1;
-        }
-        if (kDown & KEY_DOWN) {
-            if (option_idx < options.size() - 1) {
-                option_idx++;
-            }
-        } else if (kDown & KEY_UP) {
-            if (option_idx > 0) {
-                option_idx--;
-            }
-        }
-    }
-
-    exit(0);
+    // forward to ImGui-driven dialog for now
+    return ui::selectionDialog(prompt.c_str(), options, default_idx);
 }
 
 static std::string prompt_for_action(PSERVER_DATA server) {
@@ -189,28 +164,13 @@ static std::string prompt_for_address() {
         return address_list[idx];
     }
 
-    // Prompt users for a custom address
-    SwkbdState swkbd;
-    char *addr_buff = (char *)malloc(MAX_INPUT_CHAR);
-    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 3, -1);
-    swkbdSetHintText(&swkbd, "Address of host to connect to");
-    swkbdInputText(&swkbd, addr_buff, MAX_INPUT_CHAR);
-    std::string addr_string = std::string(addr_buff);
-    free(addr_buff);
-    trim(addr_string);
-    return addr_string;
+    // Prompt users for a custom address using ImGui
+    return ui::textInputDialog("Address of host to connect to", "", "");
 }
 
 static bool prompt_for_boolean(std::string prompt, bool default_val) {
-    std::vector<std::string> options = {
-        "true",
-        "false",
-    };
-    int idx = console_selection_prompt(prompt, options, default_val ? 0 : 1);
-    if (idx < 0) {
-        idx = default_val ? 0 : 1;
-    }
-    return idx == 0;
+    // use ImGui boolean dialog
+    return ui::boolDialog(prompt.c_str(), default_val);
 }
 
 static int prompt_for_display_type(int default_val) {
@@ -231,18 +191,11 @@ static int prompt_for_display_type(int default_val) {
 }
 
 static int prompt_for_int(std::string initial_text) {
-    char *setting_buff = (char *)malloc(MAX_INPUT_CHAR);
-    memset(setting_buff, 0, MAX_INPUT_CHAR);
-
-    SwkbdState swkbd;
-    swkbdInit(&swkbd, SWKBD_TYPE_NUMPAD, 1, 8);
-    swkbdSetInitialText(&swkbd, initial_text.c_str());
-    swkbdInputText(&swkbd, setting_buff, MAX_INPUT_CHAR);
-    std::string setting_str = std::string(setting_buff);
-
-    free(setting_buff);
-    trim(setting_str);
-    return std::stoi(setting_str);
+    int init = 0;
+    try {
+        init = std::stoi(initial_text);
+    } catch(...) {}
+    return ui::intDialog(initial_text.c_str(), init);
 }
 
 static void prompt_for_stream_settings(PCONFIGURATION config) {
@@ -342,14 +295,50 @@ static void prompt_for_stream_settings(PCONFIGURATION config) {
 
 static void init_3ds() {
     Result status = 0;
+    /* ensure the config/keys directory exists on the SD card; silently ignore
+       failures (e.g. running outside of a 3DS environment). */
+    mkdir(MOONLIGHT_3DS_PATH, 0777);
+
     acInit();
-    gfxInit(GSP_RGB565_OES, GSP_RGB565_OES, false);
-    gfxSetDoubleBuffering(GFX_TOP, false);
-    gfxSetDoubleBuffering(GFX_BOTTOM, false);
+    /* use the same initialization routine as the standalone demo app so the
+       screen formats and memory regions match; this avoids discrepancies in
+       where textures are allocated which seem to confuse Mandarine's cache
+       emulation. */
+    gfxInitDefault();
+    // the demo didn't explicitly set double buffering, so leave defaults
+    // (bottom is single-buffered, top is double-buffered).  we keep this
+    // behaviour since it has proven to work with ImGui rendering.
+
+    // initialize 2D/3D for ImGui painting
+    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+    C2D_Init(C2D_DEFAULT_MAX_OBJECTS);
+    C2D_Prepare();
+    // target used for drawing ImGui output (bottom screen left)
+    imgui_target = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
     consoleInit(GFX_TOP, &topScreen);
     consoleSelect(&topScreen);
     atexit(n3ds_exit_handler);
+
+    // setup ImGui context
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    /* 3DS screens are 320x240; imgui needs a valid display size or it
+       will assert during NewFrame.  The stream resolution stored in the
+       configuration is unrelated to the UI size. */
+    io.DisplaySize = ImVec2(320.0f, 240.0f);
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.MouseDrawCursor = true;
+    imgui_sw::bind_imgui_painting();
+    // prepare pixel buffer and texture for rendering ImGui
+    imgui_pixel_buffer.resize(320 * 240);
+    imgui_tex = (C3D_Tex*)malloc(sizeof(C3D_Tex));
+    static const Tex3DS_SubTexture subt3x = {512, 256, 0.0f, 1.0f, 1.0f, 0.0f};
+    imgui_image = (C2D_Image){imgui_tex, &subt3x};
+    C3D_TexInit(imgui_image.tex, 512, 256, GPU_RGBA8);
+    C3D_TexSetFilter(imgui_image.tex, GPU_LINEAR, GPU_LINEAR);
+    C3D_TexSetWrap(imgui_image.tex, GPU_REPEAT, GPU_REPEAT);
+    // optionally set up style or SwOptions here
 
     osSetSpeedupEnable(true);
     aptSetSleepAllowed(false);
@@ -369,6 +358,43 @@ static void init_3ds() {
         printf("Warning: failed to enter exclusive NDM state: %08lX\n", status);
         wait_for_button();
     }
+}
+
+// helper: render the current ImGui frame onto the bottom screen
+void render_imgui_frame() {
+    // fill gray background
+    std::fill(imgui_pixel_buffer.begin(), imgui_pixel_buffer.end(), 0x19191919u);
+    paint_imgui(imgui_pixel_buffer.data(), 320, 240, imgui_sw_options);
+    
+    // copy to texture with 3DS tiling format
+    for (int x = 0; x < 320; x++) {
+        for (int y = 0; y < 240; y++) {
+            u32 dstPos = ((((y >> 3) * (512 >> 3) + (x >> 3)) << 6)
+                        + ((x & 1) | ((y & 1) << 1) | ((x & 2) << 1)
+                        | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3))) * 4;
+            u32 srcPos = (y * 320 + x) * 4;
+            memcpy(&((u8*)imgui_image.tex->data)[dstPos],
+                   &((u8*)imgui_pixel_buffer.data())[srcPos], 4);
+        }
+    }
+    
+    /* ensure GPU sees our texture data changes; this is critical for proper rendering */
+    printf("[moonlight] flushing GPU texture cache at %p\n", imgui_image.tex->data);
+    GSPGPU_FlushDataCache(imgui_image.tex->data, 512 * 256 * 4);
+    
+    /* sync all GPU operations before proceeding */
+    gfxFlushBuffers();
+    gspWaitForVBlank();
+    
+    /* render the texture to the bottom screen using 2D/3D graphics pipeline */
+    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+    C2D_TargetClear(imgui_target, C2D_Color32(32, 38, 100, 0xFF));
+    C2D_SceneBegin(imgui_target);
+    C2D_DrawImageAt(imgui_image, 0.0f, 0.0f, 0.0f, NULL, 1.0f, 1.0f);
+    C3D_FrameEnd(0);
+    
+    /* ensure the frame is properly displayed */
+    gfxFlushBuffers();
 }
 
 static int prompt_for_app_id(PSERVER_DATA server) {

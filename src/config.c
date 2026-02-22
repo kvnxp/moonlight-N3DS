@@ -32,6 +32,8 @@
 #include <getopt.h>
 #include <pwd.h>
 #include <sys/types.h>
+#include <sys/stat.h> /* for mkdir */
+#include <errno.h>
 #include <limits.h>
 
 #ifdef __3DS__
@@ -321,8 +323,15 @@ void parse_argument(int c, char* value, PCONFIGURATION config) {
 bool config_file_parse(char* filename, PCONFIGURATION config) {
   FILE* fd = fopen(filename, "r");
   if (fd == NULL) {
-    fprintf(stderr, "Can't open configuration file: %s\n", filename);
-    return false;
+    /* It's normal for the config file to not exist on first run or when
+       the user hasn't created one on the SD card/emulator.  Only print an
+       error if something other than ENOENT happened so we don't spam the
+       console with a misleading message. */
+    if (errno != ENOENT) {
+      fprintf(stderr, "Can't open configuration file: %s\n", filename);
+      return false;
+    }
+    return true;
   }
 
   char *line = NULL;
@@ -349,6 +358,17 @@ bool config_file_parse(char* filename, PCONFIGURATION config) {
 }
 
 void config_save(char* filename, PCONFIGURATION config) {
+  /* make sure the directory exists (only the leaf directory is needed
+     for the default path used on 3DS).  mkdir will fail harmlessly if the
+     directory already exists. */
+  char dirpath[256];
+  snprintf(dirpath, sizeof(dirpath), "%s", filename);
+  char *slash = strrchr(dirpath, '/');
+  if (slash) {
+    *slash = '\0';
+    mkdir(dirpath, 0777);
+  }
+
   FILE* fd = fopen(filename, "w");
   if (fd == NULL) {
     fprintf(stderr, "Can't open configuration file: %s\n", filename);

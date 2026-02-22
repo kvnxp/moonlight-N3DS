@@ -40,6 +40,7 @@ SOURCES		:=	src \
 				src/audio/ \
 				src/input/ \
 				src/input/n3ds \
+		src/ui/ \
 				src/video/ \
 				src/video/n3ds \
 				libgamestream \
@@ -50,7 +51,10 @@ SOURCES		:=	src \
 				third_party/moonlight-common-c/src
 DATA		:=	3ds/data
 INCLUDES	:=	src \
-				libgamestream \
+			src/ui \
+			imgui-3ds \
+			imgui-3ds/source \
+			libgamestream \
 				third_party/h264bitstream \
 				third_party/libuuid \
 				third_party/moonlight-common-c/enet/include \
@@ -88,7 +92,8 @@ ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS	:=	-g -Wall -O2 -mword-relocations -Wno-psabi \
 			-fomit-frame-pointer -ffunction-sections \
 			-DVERSION_MAJOR=$(VERSION_MAJOR) -DVERSION_MINOR=$(VERSION_MINOR) -DVERSION_MICRO=$(VERSION_MICRO) \
-			$(ARCH)
+			$(ARCH) \
+			-Wno-class-memaccess # ImGui slams memcpy into non-trivial types, ignore warning
 
 # TODO: Reenable build warnings and actually address them
 CFLAGS	+=	$(INCLUDE) -D__3DS__ -DUSE_MBEDTLS -Wno-implicit-function-declaration -Wno-incompatible-pointer-types
@@ -98,7 +103,9 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti -fexceptions -std=gnu++17
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= -lswresample -lavformat -lswscale -lavcodec -lavutil -lcitro2d -lcitro3d -lfreetype -lpng -lbz2 -lopus -lexpat -lm -lcurl -lssl -lcrypto -lmbedtls -lmbedx509 -lmbedcrypto -lz -lctru
+LIBS	:= -lswresample -lavformat -lswscale -lavcodec -lavutil -lcitro2d -lcitro3d -lopus -lexpat -lm -lcurl -lssl -lcrypto -lmbedtls -lmbedx509 -lmbedcrypto -lctru
+# note: freetype/png/bz2/zlib not available in portlibs on 3DS.  omit them for now
+# LIBS += -lfreetype -lpng -lbz2 -lz
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -232,7 +239,7 @@ all: $(BUILD) $(GFXBUILD) $(DEPSDIR) $(ROMFS_T3XFILES) $(T3XHFILES)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 	@$(BANNERTOOL) makebanner $(BANNER_IMAGE_ARG) "$(BANNER_IMAGE)" $(BANNER_AUDIO_ARG) "$(BANNER_AUDIO)" -o "$(BUILD)/banner.bnr"
 	@$(BANNERTOOL) makesmdh -s "$(APP_TITLE)" -l "$(APP_DESCRIPTION)" -p "$(APP_AUTHOR)" -i "$(APP_ICON)" -f "$(ICON_FLAGS)" -o "$(BUILD)/icon.icn"
-	$(MAKEROM) -f cia -o "$(OUTPUT).cia" -target t -exefslogo $(MAKEROM_ARGS)
+	$(MAKEROM) -f cia -o "$(OUTPUT).cia" -target t $(MAKEROM_ARGS)
 
 $(BUILD):
 	@mkdir -p $@
